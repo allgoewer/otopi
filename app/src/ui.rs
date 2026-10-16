@@ -11,6 +11,7 @@ use crate::display::{Display, Image};
 use crate::rotate::{self, Leveler};
 use crate::session::Frame;
 use crate::status;
+use crate::sysinfo::SysInfo;
 
 /// After this long without video, the last frame is replaced by the status screen.
 const LAST_FRAME_KEEP: Duration = Duration::from_secs(10);
@@ -105,6 +106,9 @@ impl Ui {
         let mut shown: Option<(Status, bool)> = None; // what the status path last drew
         let mut stats = Stats::new();
         let mut bouncer = status::Bouncer::new();
+        let mut sysinfo = SysInfo::new();
+        // The corner label over the video: (text, scale, image).
+        let mut label: Option<(String, usize, Image)> = None;
         // Time of the last animation frame while the "Searching" screen moves.
         let mut animating: Option<Instant> = None;
 
@@ -139,6 +143,8 @@ impl Ui {
 
             // Set again below only while the "Searching" screen moves.
             let last_anim = animating.take();
+            // Video gets the label in the corner, status screens do not.
+            let mut with_label = false;
             let to_show = if let Some(frame) = frame {
                 let t = Instant::now();
                 match decode::decode_bgra(&frame.jpeg, &mut decoded.data) {
@@ -164,6 +170,17 @@ impl Ui {
                         }
                         stats.frame(decode_time, t.elapsed(), degrees);
                         last_frame = Some((frame_img, Instant::now()));
+                        with_label = true;
+                        if let Some(d) = display.as_ref() {
+                            let scale = crate::display::label_scale((w, h), d.mode_size());
+                            let text = sysinfo.text();
+                            if label
+                                .as_ref()
+                                .is_none_or(|(t, s, _)| t != text || *s != scale)
+                            {
+                                label = Some((text.into(), scale, status::label(text, scale)));
+                            }
+                        }
                         shown = None;
                         last_frame.as_ref().map(|(i, _)| i)
                     }
@@ -211,7 +228,8 @@ impl Ui {
             };
 
             if let (Some(d), Some(image)) = (display.as_mut(), to_show) {
-                if let Err(e) = d.present(image) {
+                let l = label.as_ref().filter(|_| with_label).map(|(_, _, i)| i);
+                if let Err(e) = d.present(image, l) {
                     error!("display: {e}; reopening");
                     display = None;
                     shown = None;

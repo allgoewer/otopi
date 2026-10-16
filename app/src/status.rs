@@ -1,6 +1,6 @@
 //! Text rendering for the status screen, with the 8×8 font from `font8x8`.
 
-use font8x8::{UnicodeFonts, BASIC_FONTS};
+use font8x8::{UnicodeFonts, BASIC_FONTS, LATIN_FONTS};
 
 use crate::display::Image;
 
@@ -25,6 +25,7 @@ fn draw_text(img: &mut Image, x: usize, y: usize, text: &str, scale: usize, colo
     for (i, ch) in text.chars().enumerate() {
         let glyph = BASIC_FONTS
             .get(ch)
+            .or_else(|| LATIN_FONTS.get(ch))
             .or_else(|| BASIC_FONTS.get('?'))
             .unwrap();
         for (gy, bits) in glyph.iter().enumerate() {
@@ -168,6 +169,18 @@ impl Bouncer {
     }
 }
 
+/// A line of text on a semi-transparent dark box, as a BGRA image with alpha
+/// (premultiplied: the box is black). Font size 8 * `scale` pixels.
+pub fn label(text: &str, scale: usize) -> Image {
+    let pad = scale;
+    let mut img = Image::new(text_width(text, scale) + 2 * pad, 8 * scale + 2 * pad);
+    for px in img.data.chunks_exact_mut(4) {
+        px.copy_from_slice(&[0, 0, 0, 0xa0]);
+    }
+    draw_text(&mut img, pad, pad, text, scale, WHITE);
+    img
+}
+
 /// Draws a small label in the top-left corner, over the current content.
 pub fn badge(img: &mut Image, text: &str) {
     let pad = 4;
@@ -185,6 +198,10 @@ mod tests {
         let mut img = Image::new(640, 360);
         screen(&mut img, "Searching for otoscope...", "hndec-*");
         badge(&mut img, "Reconnecting");
+        let l = label("CPU  12%  48\u{b0}C  v0.1.0-3-gabcdef0", 2);
+        assert_eq!((l.width, l.height), (33 * 16 + 4, 20));
+        assert!(l.data.chunks(4).any(|p| p == WHITE));
+        assert!(l.data.chunks(4).any(|p| p == [0, 0, 0, 0xa0]));
         assert!(img.data.chunks(4).any(|p| p == WHITE));
         // a very long line must not panic
         screen(&mut img, &"x".repeat(500), &"y".repeat(500));

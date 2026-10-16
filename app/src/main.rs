@@ -6,6 +6,7 @@ mod proto;
 mod rotate;
 mod session;
 mod status;
+mod sysinfo;
 mod ui;
 mod wifi;
 
@@ -15,6 +16,9 @@ use std::thread;
 use std::time::Duration;
 
 use log::{error, info, warn};
+
+/// `git describe` of the build (see build.rs).
+pub const VERSION: &str = env!("OTOPI_VERSION");
 
 const USAGE: &str = "\
 usage: otopi [options]
@@ -27,6 +31,7 @@ usage: otopi [options]
   --no-display     do not use DRM/KMS output
   --config FILE    settings file (default /boot/otopi.conf)
   --no-rotate      do not keep the image level (overrides the settings file)
+  -V, --version    show the version
   -h, --help       show this text
 log level: RUST_LOG=debug";
 
@@ -67,6 +72,10 @@ fn parse_args() -> Result<Args, String> {
             "--ssid-prefix" => args.ssid_prefix = value()?,
             "--config" => args.config = value()?.into(),
             "--no-rotate" => args.no_rotate = true,
+            "-V" | "--version" => {
+                println!("otopi {VERSION}");
+                std::process::exit(0);
+            }
             "-h" | "--help" => return Err(String::new()),
             _ => return Err(format!("unknown option {a}")),
         }
@@ -93,6 +102,7 @@ fn main() -> ExitCode {
         }
     }
 
+    info!("otopi {VERSION}");
     let cfg = config::Config::load(&args.config);
     let ui = ui::Ui::new();
     ui.spawn(
