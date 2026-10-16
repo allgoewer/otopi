@@ -3,7 +3,7 @@ name = "otopi"
 version = "0.1.0"
 edition = "2021"
 description = "NE3 WiFi otoscope viewer for Raspberry Pi"
-license = "MIT"
+license = "GPL-3.0-or-later"
 
 [dependencies]
 log = "0.4"

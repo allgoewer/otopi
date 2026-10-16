@@ -7,7 +7,8 @@
 OTOPI_VERSION = 0.1.0
 OTOPI_SITE = $(BR2_EXTERNAL_OTOPI_PATH)/../app
 OTOPI_SITE_METHOD = local
-OTOPI_LICENSE = MIT
+OTOPI_LICENSE = GPL-3.0+
+OTOPI_LICENSE_FILES = LICENSE
 OTOPI_OVERRIDE_SRCDIR_RSYNC_EXCLUSIONS = --exclude target --exclude VENDOR --exclude .cargo
 
 # Buildroot vendors crates in the download step, which the local site method
