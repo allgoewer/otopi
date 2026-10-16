@@ -1,0 +1,7 @@
+config BR2_PACKAGE_OTOPI
+	bool "otopi"
+	depends on BR2_PACKAGE_HOST_RUSTC_TARGET_ARCH_SUPPORTS
+	select BR2_PACKAGE_HOST_RUSTC
+	select BR2_PACKAGE_IW # runtime: WiFi scan/connect
+	help
+	  Fullscreen viewer for the NE3 WiFi otoscope (DRM/KMS).
