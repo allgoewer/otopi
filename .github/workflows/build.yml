@@ -1,0 +1,103 @@
+# Tests the app, builds the SD card image, and on a v* tag publishes a GitHub
+# release with the image and release notes from git-cliff.
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app
+      - run: cargo fmt --check
+      - run: cargo test --locked
+
+  image:
+    needs: test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      # The Buildroot output needs about 7 GB, the downloads another 2 GB.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Install Buildroot host dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential bc cpio file rsync unzip wget xz-utils
+
+      # Source tarballs and vendored crates (BR_CARGO_HOME is inside dl/).
+      - uses: actions/cache@v4
+        with:
+          path: dl
+          key: dl-${{ hashFiles('buildroot.version', 'external/configs/*', 'app/Cargo.lock') }}
+          restore-keys: dl-
+
+      - name: Build
+        run: make
+
+      - name: Package
+        run: |
+          case "$GITHUB_REF" in
+            refs/tags/v*) version="$GITHUB_REF_NAME" ;;
+            *) version="$(git rev-parse --short HEAD)" ;;
+          esac
+          mkdir dist
+          xz -T0 -9 -c output/images/sdcard.img > "dist/otopi-${version}-sdcard.img.xz"
+          tar -C output/images -czf "dist/otopi-${version}-usbboot.tar.gz" usbboot
+          (cd dist && sha256sum * > SHA256SUMS)
+          ls -l dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: otopi-image
+          path: dist/
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: image
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: otopi-image
+          path: dist
+
+      - name: Release notes
+        uses: orhun/git-cliff-action@v4
+        with:
+          config: cliff.toml
+          args: --latest
+        env:
+          OUTPUT: RELEASE_NOTES.md
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          body_path: RELEASE_NOTES.md
+          files: dist/*
