@@ -32,6 +32,8 @@ jobs:
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # tags for git describe (version shown on screen)
 
       # The Buildroot output needs about 7 GB, the downloads another 2 GB.
       - name: Free disk space
