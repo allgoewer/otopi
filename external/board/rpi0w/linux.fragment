@@ -1,0 +1,133 @@
+# otopi: no modules; everything the viewer needs is builtin.
+# gen-linux-defconfig.sh applies this on top of bcmrpi_defconfig with all
+# "=m" options removed, and writes linux.defconfig. Buildroot also applies it
+# on top of linux.defconfig, so small changes work without regenerating.
+# CONFIG_MODULES is not set
+
+# Boot: initramfs (LZ4) embedded by Buildroot, quiet and fast
+CONFIG_BLK_DEV_INITRD=y
+# Single LZ4 decompression: the kernel image is LZ4 (BR2_LINUX_KERNEL_LZ4),
+# the embedded cpio is not compressed separately. INITRAMFS_SOURCE is set here
+# only so that the compression choice is visible while the fragment is merged;
+# Buildroot sets the same value afterwards.
+CONFIG_INITRAMFS_SOURCE="${BR_BINARIES_DIR}/rootfs.cpio"
+CONFIG_INITRAMFS_COMPRESSION_NONE=y
+CONFIG_RD_LZ4=y
+CONFIG_DEVTMPFS=y
+CONFIG_DEVTMPFS_MOUNT=y
+CONFIG_PRINTK_TIME=y
+# CONFIG_LOGO is not set
+
+# Display: vc4 KMS on HDMI, no fbdev. vc4 depends on SND && SND_SOC (HDMI
+# audio), so the sound core stays on with no other sound drivers.
+CONFIG_DRM=y
+CONFIG_SOUND=y
+CONFIG_SND=y
+CONFIG_SND_SOC=y
+CONFIG_DRM_VC4=y
+CONFIG_CLK_RASPBERRYPI=y
+CONFIG_RASPBERRYPI_FIRMWARE=y
+# vc4 HDMI reads the EDID over i2c2 (DDC); without it vc4 defers forever.
+CONFIG_I2C_BCM2835=y
+# CONFIG_DRM_VC4_HDMI_CEC is not set
+# CONFIG_DRM_V3D is not set
+# CONFIG_DRM_UDL is not set
+# CONFIG_DRM_PANEL_SIMPLE is not set
+# CONFIG_DRM_FBDEV_EMULATION is not set
+# CONFIG_FB_TFT is not set
+
+# WiFi: BCM43430 over SDIO, cfg80211 only
+CONFIG_CFG80211=y
+# CONFIG_CFG80211_WEXT is not set
+# CONFIG_MAC80211 is not set
+CONFIG_BRCMUTIL=y
+CONFIG_BRCMFMAC=y
+CONFIG_BRCMFMAC_SDIO=y
+# CONFIG_BRCMFMAC_USB is not set
+CONFIG_FW_LOADER=y
+# CONFIG_RFKILL is not set
+
+# USB: device mode only (OTG port), Ethernet gadget (ECM + RNDIS) for debugging
+CONFIG_USB_SUPPORT=y
+# CONFIG_USB is not set
+CONFIG_USB_GADGET=y
+CONFIG_USB_DWC2=y
+CONFIG_USB_DWC2_PERIPHERAL=y
+CONFIG_USB_ETH=y
+CONFIG_USB_ETH_RNDIS=y
+
+# Boot partition (FAT) on the SD card: persisted SSH host keys
+CONFIG_MMC=y
+CONFIG_FAT_FS=y
+CONFIG_VFAT_FS=y
+CONFIG_NLS=y
+CONFIG_NLS_CODEPAGE_437=y
+CONFIG_NLS_ISO8859_1=y
+
+# Not needed
+# CONFIG_BT is not set
+# CONFIG_MEDIA_SUPPORT is not set
+# CONFIG_IPV6 is not set
+# CONFIG_NETFILTER is not set
+# CONFIG_NET_SCHED is not set
+# CONFIG_BRIDGE is not set
+# CONFIG_VLAN_8021Q is not set
+# CONFIG_BATMAN_ADV is not set
+# CONFIG_CAN is not set
+# CONFIG_NFC is not set
+# CONFIG_IEEE802154 is not set
+# CONFIG_6LOWPAN is not set
+# CONFIG_ATM is not set
+# CONFIG_L2TP is not set
+# CONFIG_NET_9P is not set
+# CONFIG_CEPH_LIB is not set
+# CONFIG_WIREGUARD is not set
+# CONFIG_PPP is not set
+# CONFIG_SLIP is not set
+# CONFIG_TUN is not set
+# CONFIG_MACVLAN is not set
+# CONFIG_VXLAN is not set
+# CONFIG_BLK_DEV_DM is not set
+# CONFIG_MD is not set
+# CONFIG_SCSI is not set
+# CONFIG_ATA is not set
+# CONFIG_BLK_DEV_LOOP is not set
+# CONFIG_BLK_DEV_NBD is not set
+# CONFIG_BLK_DEV_RAM is not set
+# CONFIG_ZRAM is not set
+# CONFIG_IIO is not set
+# CONFIG_HWMON is not set
+# CONFIG_W1 is not set
+# CONFIG_RC_CORE is not set
+# CONFIG_STAGING is not set
+# CONFIG_INPUT_JOYSTICK is not set
+# CONFIG_INPUT_TOUCHSCREEN is not set
+# CONFIG_INPUT_MISC is not set
+# CONFIG_HID is not set
+# CONFIG_MTD is not set
+# CONFIG_SPI is not set
+# CONFIG_PWM is not set
+# CONFIG_NEW_LEDS is not set
+# CONFIG_REGULATOR_USERSPACE_CONSUMER is not set
+# CONFIG_EXT4_FS is not set
+# CONFIG_BTRFS_FS is not set
+# CONFIG_XFS_FS is not set
+# CONFIG_F2FS_FS is not set
+# CONFIG_NFS_FS is not set
+# CONFIG_NFSD is not set
+# CONFIG_CIFS is not set
+# CONFIG_FUSE_FS is not set
+# CONFIG_OVERLAY_FS is not set
+# CONFIG_SQUASHFS is not set
+# CONFIG_ISO9660_FS is not set
+# CONFIG_UDF_FS is not set
+# CONFIG_NTFS3_FS is not set
+# CONFIG_CRYPTO_USER_API_HASH is not set
+# CONFIG_SECURITY is not set
+# CONFIG_AUDIT is not set
+# CONFIG_DEBUG_INFO is not set
+# CONFIG_DEBUG_INFO_BTF is not set
+# CONFIG_FTRACE is not set
+# CONFIG_KPROBES is not set
+# CONFIG_PROFILING is not set
+# CONFIG_IKCONFIG is not set
