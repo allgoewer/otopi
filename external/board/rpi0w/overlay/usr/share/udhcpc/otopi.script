@@ -1,0 +1,12 @@
+#!/bin/sh
+# udhcpc script for otopi: set the address only (no route or DNS needed).
+case "$1" in
+	deconfig)
+		ip addr flush dev "$interface"
+		;;
+	bound|renew)
+		ip addr flush dev "$interface"
+		ip addr add "$ip/${mask:-24}" dev "$interface"
+		;;
+esac
+exit 0

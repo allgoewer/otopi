@@ -1,0 +1,27 @@
+#!/bin/sh
+# Starts dropbear. Host keys and authorized_keys persist in /boot/ssh on the
+# SD card's FAT partition (mounted by otopi-mount-boot), because the root
+# filesystem is RAM only. Without an SD card (rpiboot) there is no
+# authorized_keys, so no login is possible.
+
+KEYDIR=/etc/dropbear
+
+mkdir -p "$KEYDIR" /root/.ssh
+chmod 700 "$KEYDIR" /root/.ssh
+
+if grep -q " /boot " /proc/mounts; then
+	if ls /boot/ssh/dropbear_*_host_key >/dev/null 2>&1; then
+		cp /boot/ssh/dropbear_*_host_key "$KEYDIR/"
+	else
+		dropbearkey -t ed25519 -f "$KEYDIR/dropbear_ed25519_host_key"
+		otopi-save-hostkeys
+	fi
+	chmod 600 "$KEYDIR"/*
+fi
+
+cat /boot/ssh/authorized_keys 2>/dev/null > /root/.ssh/authorized_keys
+chmod 600 /root/.ssh/authorized_keys
+[ -s /root/.ssh/authorized_keys ] || echo "otopi-sshd: no /boot/ssh/authorized_keys, SSH login impossible" >&2
+
+# -s: key login only. -R: create missing host keys (no SD card).
+exec dropbear -F -E -s -R

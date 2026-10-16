@@ -1,0 +1,9 @@
+#!/bin/sh
+# Saves the dropbear host keys to /boot/ssh so that they survive a reboot.
+set -e
+grep -q " /boot " /proc/mounts || { echo "/boot is not mounted" >&2; exit 1; }
+mount -o remount,rw /boot
+trap 'sync; mount -o remount,ro /boot' EXIT
+mkdir -p /boot/ssh
+cp /etc/dropbear/dropbear_*_host_key /boot/ssh/
+echo "host keys saved to /boot/ssh"

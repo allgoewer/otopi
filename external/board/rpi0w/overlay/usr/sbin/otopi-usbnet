@@ -1,0 +1,10 @@
+#!/bin/sh
+# USB Ethernet gadget (usb0): static address and a DHCP server for the host.
+# Run by init with respawn; exits (and is restarted) while usb0 is missing.
+if ! ip link show usb0 >/dev/null 2>&1; then
+	sleep 5
+	exit 1
+fi
+ip addr add 10.55.0.1/24 dev usb0 2>/dev/null
+ip link set usb0 up
+exec udhcpd -f /etc/udhcpd.conf
