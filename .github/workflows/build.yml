@@ -1,5 +1,5 @@
-# Tests the app, builds the SD card image, and on a v* tag publishes a GitHub
-# release with the image and release notes from git-cliff.
+# Tests the app on every push and pull request. Only a v* tag builds the SD
+# card image and publishes a GitHub release with release notes from git-cliff.
 name: build
 
 on:
@@ -27,6 +27,7 @@ jobs:
       - run: cargo test --locked
 
   image:
+    if: startsWith(github.ref, 'refs/tags/v')
     needs: test
     runs-on: ubuntu-24.04
     timeout-minutes: 180
@@ -59,10 +60,7 @@ jobs:
 
       - name: Package
         run: |
-          case "$GITHUB_REF" in
-            refs/tags/v*) version="$GITHUB_REF_NAME" ;;
-            *) version="$(git rev-parse --short HEAD)" ;;
-          esac
+          version="$GITHUB_REF_NAME"
           mkdir dist
           xz -T0 -9 -c output/images/sdcard.img > "dist/otopi-${version}-sdcard.img.xz"
           tar -C output/images -czf "dist/otopi-${version}-usbboot.tar.gz" usbboot
@@ -76,7 +74,6 @@ jobs:
           if-no-files-found: error
 
   release:
-    if: startsWith(github.ref, 'refs/tags/v')
     needs: image
     runs-on: ubuntu-24.04
     permissions:
