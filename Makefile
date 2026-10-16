@@ -62,6 +62,7 @@ clean-output:
 
 # Everything else goes to Buildroot.
 Makefile: ;
+$(TOP)/external/configs/$(DEFCONFIG): ;
 
 %: $(BR_DIR)/Makefile
 	$(BR_MAKE) $@
