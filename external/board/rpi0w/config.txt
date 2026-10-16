@@ -1,0 +1,22 @@
+# Raspberry Pi Zero W boot configuration for otopi.
+# Cut-down firmware: the GPU firmware only boots; vc4 KMS drives HDMI.
+start_file=start_cd.elf
+fixup_file=fixup_cd.dat
+gpu_mem=16
+
+kernel=zImage
+dtoverlay=vc4-kms-v3d
+disable_overscan=1
+
+# PL011 UART on GPIO 14/15 for the serial console; Bluetooth is not used.
+enable_uart=1
+dtoverlay=disable-bt
+
+# USB OTG port in device mode: Ethernet gadget (and rpiboot before that)
+dtoverlay=dwc2,dr_mode=peripheral
+
+# Faster boot
+boot_delay=0
+disable_splash=1
+initial_turbo=30
+avoid_warnings=1
