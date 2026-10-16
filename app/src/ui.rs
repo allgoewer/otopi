@@ -16,6 +16,8 @@ use crate::status;
 const LAST_FRAME_KEEP: Duration = Duration::from_secs(10);
 const DISPLAY_RETRY: Duration = Duration::from_secs(2);
 const STATUS_SIZE: (usize, usize) = (640, 360);
+/// Frame interval of the moving "Searching" screen.
+const ANIMATION_FRAME: Duration = Duration::from_millis(40);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Status {
@@ -102,12 +104,20 @@ impl Ui {
         let mut last_frame: Option<(Image, Instant)> = None;
         let mut shown: Option<(Status, bool)> = None; // what the status path last drew
         let mut stats = Stats::new();
+        let mut bouncer = status::Bouncer::new();
+        // Time of the last animation frame while the "Searching" screen moves.
+        let mut animating: Option<Instant> = None;
 
         loop {
             let (status, frame) = {
                 let mut s = self.state.lock().unwrap();
                 if !s.dirty {
-                    s = self.cv.wait_timeout(s, Duration::from_secs(1)).unwrap().0;
+                    let timeout = if animating.is_some() {
+                        ANIMATION_FRAME
+                    } else {
+                        Duration::from_secs(1)
+                    };
+                    s = self.cv.wait_timeout(s, timeout).unwrap().0;
                 }
                 s.dirty = false;
                 (s.status.clone(), s.frame.take())
@@ -127,6 +137,8 @@ impl Ui {
                 }
             }
 
+            // Set again below only while the "Searching" screen moves.
+            let last_anim = animating.take();
             let to_show = if let Some(frame) = frame {
                 let t = Instant::now();
                 match decode::decode_bgra(&frame.jpeg, &mut decoded.data) {
@@ -166,7 +178,18 @@ impl Ui {
                 let recent = last_frame
                     .as_ref()
                     .is_some_and(|(_, t)| t.elapsed() < LAST_FRAME_KEEP);
-                if shown.as_ref() == Some(&(status.clone(), recent)) {
+                if status == Status::Searching && !recent {
+                    let now = Instant::now();
+                    let dt = last_anim.map_or(0.0, |t| (now - t).as_secs_f32());
+                    animating = Some(now);
+                    if (img.width, img.height) != STATUS_SIZE {
+                        img = Image::new(STATUS_SIZE.0, STATUS_SIZE.1);
+                    }
+                    let (title, detail) = status.text();
+                    bouncer.screen(&mut img, &title, &detail, dt);
+                    shown = None;
+                    Some(&img)
+                } else if shown.as_ref() == Some(&(status.clone(), recent)) {
                     None
                 } else {
                     let (title, detail) = status.text();
