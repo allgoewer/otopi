@@ -1,21 +1,26 @@
 //! Fullscreen output via DRM/KMS (atomic API, no display server, no fbdev).
 //!
-//! Preferred path: the dumb buffers have the image size (640×360) and the primary
-//! plane scales them to the screen in hardware (vc4 HVS). If the driver refuses a
-//! scaled plane, the buffers have the mode size and we scale on the CPU.
+//! The LCARS frame (`lcars`) surrounds the picture. Preferred path: the frame
+//! is on a full-screen ARGB overlay plane, transparent over the viewport, and
+//! the primary plane below shows the picture at its own size (640×360),
+//! scaled into the viewport in hardware (vc4 HVS). The frame is redrawn only
+//! where it changes. If the driver refuses that, the buffers have the mode
+//! size and we put the frame and the scaled picture together on the CPU.
 
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io;
 use std::os::unix::io::{AsFd, BorrowedFd};
 
-use drm::buffer::DrmFourcc;
+use drm::buffer::{Buffer as _, DrmFourcc};
 use drm::control::{
     atomic, connector, crtc, dumbbuffer::DumbBuffer, framebuffer, plane, property,
     AtomicCommitFlags, Device as ControlDevice, ModeTypeFlags, PlaneType,
 };
 use drm::Device as BasicDevice;
 use log::{info, warn};
+
+use crate::lcars::{self, Layout, Rect};
 
 /// A BGRA image in memory (4 bytes per pixel, no row padding).
 #[derive(Clone, Default)]
@@ -51,11 +56,25 @@ struct Buffer {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Rect {
-    x: i32,
-    y: i32,
-    w: u32,
-    h: u32,
+enum Path {
+    /// Frame on the overlay plane, picture scaled by the primary plane.
+    Overlay,
+    /// Frame and scaled picture put together on the CPU, at the mode size.
+    Composite,
+}
+
+/// The LCARS frame, rendered at 1/`scale` of the screen size.
+struct Chrome {
+    scale: usize,
+    layout: Layout,
+    state: Option<lcars::State>,
+    img: Image,
+    /// Overlay path: the overlay plane's buffers.
+    buffers: Vec<Buffer>,
+    front: usize,
+    /// Per destination buffer (overlay or primary): rectangles of `img`
+    /// changed since that buffer was last updated.
+    pending: [Vec<Rect>; 2],
 }
 
 pub struct Display {
@@ -63,72 +82,24 @@ pub struct Display {
     connector: connector::Handle,
     crtc: crtc::Handle,
     plane: plane::Handle,
+    overlay: Option<plane::Handle>,
     mode: drm::control::Mode,
     props: HashMap<(u32, &'static str), property::Handle>,
     buffers: Vec<Buffer>,
-    /// Size of the dumb buffers.
+    /// Size of the primary dumb buffers.
     buf_size: (usize, usize),
-    /// Minimum buffer size with hardware scaling, so images up to this size
+    /// Minimum buffer size on the overlay path, so pictures up to this size
     /// need no reallocation (the plane shows only the used part).
     reserve: (usize, usize),
     back: usize,
-    /// None until the first commit; false after hardware scaling was refused.
-    hw_scaling: Option<bool>,
+    /// The primary buffer on screen and the picture size in it.
+    shown: Option<(usize, (usize, usize))>,
+    /// Composite path: the last picture, to redraw it under a changed frame.
+    last: Option<Image>,
+    /// None until the first `present`.
+    path: Option<Path>,
+    chrome: Chrome,
     modeset_done: bool,
-    overlay: Option<Overlay>,
-}
-
-/// Overlay plane that shows the status label in the screen corner, at screen
-/// resolution, independent of the video plane.
-struct Overlay {
-    plane: plane::Handle,
-    buffers: Vec<Buffer>,
-    /// Size of the buffers (the label size).
-    size: (usize, usize),
-    /// Buffer holding `label`.
-    front: usize,
-    label: Option<Image>,
-    /// Where the label is shown in the next commit; None hides it.
-    dst: Option<Rect>,
-    /// None until tested with the first label; false if the driver refused it.
-    usable: Option<bool>,
-}
-
-/// Scale of the status label (multiple of the 8 px font) on a `mode` screen
-/// showing a level `src` image: the largest one, up to about 16 px on 1080p,
-/// that fits into the black bar below the image. Without room, the smallest.
-pub fn label_scale(src: (usize, usize), mode: (usize, usize)) -> usize {
-    let bar = mode.1.saturating_sub(letterbox(src, mode).h as usize) / 2;
-    let max = (mode.1 / 540).max(1);
-    // label height 10 * scale plus a margin of 2 * scale (see status::label)
-    (1..=max).rev().find(|s| 12 * s <= bar).unwrap_or(1)
-}
-
-/// Where a label of `size` goes: bottom-right in `area`, margin of a fifth of
-/// its height. None if it does not fit.
-fn label_rect(size: (usize, usize), area: (usize, usize)) -> Option<Rect> {
-    let m = size.1 / 5;
-    Some(Rect {
-        x: area.0.checked_sub(size.0 + m)? as i32,
-        y: area.1.checked_sub(size.1 + m)? as i32,
-        w: size.0 as u32,
-        h: size.1 as u32,
-    })
-}
-
-/// Alpha-blends the BGRA `label` into an XRGB buffer at `r`.
-fn blend(out: &mut [u8], pitch: usize, label: &Image, r: Rect) {
-    for y in 0..label.height {
-        let o = (r.y as usize + y) * pitch + r.x as usize * 4;
-        let row = &mut out[o..o + label.width * 4];
-        let src = &label.data[y * label.width * 4..(y + 1) * label.width * 4];
-        for (d, s) in row.chunks_exact_mut(4).zip(src.chunks_exact(4)) {
-            let a = s[3] as u32;
-            for c in 0..3 {
-                d[c] = ((s[c] as u32 * a + d[c] as u32 * (255 - a)) / 255) as u8;
-            }
-        }
-    }
 }
 
 fn other(msg: impl Into<String>) -> io::Error {
@@ -136,19 +107,44 @@ fn other(msg: impl Into<String>) -> io::Error {
 }
 
 /// Largest rectangle with the aspect ratio of `src` that fits into `dst`, centered.
-fn letterbox(src: (usize, usize), dst: (usize, usize)) -> Rect {
+fn letterbox(src: (usize, usize), dst: Rect) -> Rect {
     let (sw, sh) = (src.0 as u64, src.1 as u64);
-    let (dw, dh) = (dst.0 as u64, dst.1 as u64);
+    let (dw, dh) = (dst.w as u64, dst.h as u64);
     let (w, h) = if dw * sh <= dh * sw {
         (dw, dw * sh / sw)
     } else {
         (dh * sw / sh, dh)
     };
     Rect {
-        x: ((dw - w) / 2) as i32,
-        y: ((dh - h) / 2) as i32,
-        w: w as u32,
-        h: h as u32,
+        x: dst.x + ((dw - w) / 2) as usize,
+        y: dst.y + ((dh - h) / 2) as usize,
+        w: w as usize,
+        h: h as usize,
+    }
+}
+
+fn scaled(r: Rect, s: usize) -> Rect {
+    Rect {
+        x: r.x * s,
+        y: r.y * s,
+        w: r.w * s,
+        h: r.h * s,
+    }
+}
+
+/// Copies `r` of `img` into a mapped buffer, each pixel as a `scale`² block,
+/// leaving out `hole` (in buffer pixels).
+fn copy_scaled(out: &mut [u8], pitch: usize, img: &Image, r: Rect, scale: usize, hole: Rect) {
+    for y in r.y * scale..r.bottom() * scale {
+        let src = &img.data[(y / scale * img.width) * 4..][..img.width * 4];
+        let row = &mut out[y * pitch..];
+        let in_hole = y >= hole.y && y < hole.bottom();
+        for x in r.x * scale..r.right() * scale {
+            if in_hole && x >= hole.x && x < hole.right() {
+                continue;
+            }
+            row[x * 4..x * 4 + 4].copy_from_slice(&src[x / scale * 4..x / scale * 4 + 4]);
+        }
     }
 }
 
@@ -217,7 +213,7 @@ impl Display {
             .copied()
             .find(|&p| is_type(p, PlaneType::Primary))
             .ok_or_else(|| other("no primary plane"))?;
-        // For the status label in the screen corner; optional.
+        // For the LCARS frame; optional.
         let overlay = on_crtc.iter().copied().find(|&p| {
             is_type(p, PlaneType::Overlay)
                 && card
@@ -257,34 +253,51 @@ impl Display {
             h,
             mode.vrefresh()
         );
+        // Half resolution on large screens: a quarter of the memory traffic
+        // for scanning out the overlay, and the frame is made of big shapes.
+        let scale = if h >= 1000 { 2 } else { 1 };
+        let size = (w as usize / scale, h as usize / scale);
         Ok(Display {
             card,
             connector: con.handle(),
             crtc,
             plane,
+            overlay,
             mode,
             props,
             buffers: Vec::new(),
             buf_size: (0, 0),
             reserve: (0, 0),
             back: 0,
-            hw_scaling: None,
-            modeset_done: false,
-            overlay: overlay.map(|plane| Overlay {
-                plane,
+            shown: None,
+            last: None,
+            path: None,
+            chrome: Chrome {
+                scale,
+                layout: Layout::new(size),
+                state: None,
+                img: Image::new(size.0, size.1),
                 buffers: Vec::new(),
-                size: (0, 0),
                 front: 0,
-                label: None,
-                dst: None,
-                usable: None,
-            }),
+                pending: [Vec::new(), Vec::new()],
+            },
+            modeset_done: false,
         })
     }
 
     pub fn mode_size(&self) -> (usize, usize) {
         let (w, h) = self.mode.size();
         (w as usize, h as usize)
+    }
+
+    /// Size of the area inside the frame, in screen pixels.
+    pub fn viewport_size(&self) -> (usize, usize) {
+        let v = scaled(self.chrome.layout.viewport, self.chrome.scale);
+        (v.w, v.h)
+    }
+
+    fn viewport(&self) -> Rect {
+        scaled(self.chrome.layout.viewport, self.chrome.scale)
     }
 
     fn prop(&self, obj: impl Into<u32>, name: &'static str) -> io::Result<property::Handle> {
@@ -294,12 +307,39 @@ impl Display {
             .ok_or_else(|| other(format!("missing property {name}")))
     }
 
-    /// Images up to `size` will be shown without reallocating the buffers.
+    /// Pictures up to `size` will be shown without reallocating the buffers.
     pub fn reserve(&mut self, size: (usize, usize)) {
         self.reserve = (self.reserve.0.max(size.0), self.reserve.1.max(size.1));
     }
 
-    /// Makes the buffers `size` exactly, or (not `exact`) at least `size`.
+    fn make_buffers(&mut self, size: (usize, usize), format: DrmFourcc) -> io::Result<Vec<Buffer>> {
+        let (depth, bpp) = if format == DrmFourcc::Argb8888 {
+            (32, 32)
+        } else {
+            (24, 32)
+        };
+        let mut v = Vec::new();
+        for _ in 0..2 {
+            let mut db =
+                self.card
+                    .create_dumb_buffer((size.0 as u32, size.1 as u32), format, 32)?;
+            self.card.map_dumb_buffer(&mut db)?.as_mut().fill(0);
+            let fb = self.card.add_framebuffer(&db, depth, bpp)?;
+            v.push(Buffer { db, fb });
+        }
+        Ok(v)
+    }
+
+    fn free_buffers(&mut self, buffers: Vec<Buffer>) {
+        for b in buffers {
+            let _ = self.card.destroy_framebuffer(b.fb);
+            if let Err(e) = self.card.destroy_dumb_buffer(b.db) {
+                warn!("destroy dumb buffer: {e}");
+            }
+        }
+    }
+
+    /// Makes the primary buffers `size` exactly, or (not `exact`) at least `size`.
     fn ensure_buffers(&mut self, size: (usize, usize), exact: bool) -> io::Result<()> {
         let (bw, bh) = self.buf_size;
         let fits = if exact {
@@ -315,31 +355,29 @@ impl Display {
         } else {
             (size.0.max(self.reserve.0), size.1.max(self.reserve.1))
         };
-        for b in self.buffers.drain(..) {
-            let _ = self.card.destroy_framebuffer(b.fb);
-            let _ = self.card.destroy_dumb_buffer(b.db);
-        }
-        for _ in 0..2 {
-            let mut db = self.card.create_dumb_buffer(
-                (size.0 as u32, size.1 as u32),
-                DrmFourcc::Xrgb8888,
-                32,
-            )?;
-            self.card.map_dumb_buffer(&mut db)?.as_mut().fill(0);
-            let fb = self.card.add_framebuffer(&db, 24, 32)?;
-            self.buffers.push(Buffer { db, fb });
-        }
+        let old = std::mem::take(&mut self.buffers);
+        self.free_buffers(old);
+        self.buffers = self.make_buffers(size, DrmFourcc::Xrgb8888)?;
         self.buf_size = size;
+        self.shown = None;
+        if self.path == Some(Path::Composite) {
+            // New buffers hold no frame yet.
+            let full = self.chrome.layout.full();
+            self.chrome.pending = [vec![full], vec![full]];
+        }
         Ok(())
     }
 
+    /// Sets the planes: the primary shows `src` of buffer `buf` at `dst`;
+    /// the overlay shows the frame on the overlay path and is off otherwise.
     fn commit(
         &mut self,
+        buf: usize,
         src: (usize, usize),
         dst: Rect,
         flags: AtomicCommitFlags,
     ) -> io::Result<()> {
-        let fb = self.buffers[self.back].fb;
+        use property::Value::{SignedRange as S, UnsignedRange as U};
         let mut req = atomic::AtomicModeReq::new();
         if !self.modeset_done {
             let blob = self.card.create_property_blob(&self.mode)?;
@@ -355,52 +393,40 @@ impl Display {
                 property::Value::Boolean(true),
             );
         }
-        let p = self.plane;
-        use property::Value::{SignedRange as S, UnsignedRange as U};
-        req.add_property(
-            p,
-            self.prop(p, "FB_ID")?,
-            property::Value::Framebuffer(Some(fb)),
-        );
-        req.add_property(
-            p,
-            self.prop(p, "CRTC_ID")?,
-            property::Value::CRTC(Some(self.crtc)),
-        );
-        req.add_property(p, self.prop(p, "SRC_X")?, U(0));
-        req.add_property(p, self.prop(p, "SRC_Y")?, U(0));
-        req.add_property(p, self.prop(p, "SRC_W")?, U((src.0 as u64) << 16));
-        req.add_property(p, self.prop(p, "SRC_H")?, U((src.1 as u64) << 16));
-        req.add_property(p, self.prop(p, "CRTC_X")?, S(dst.x as i64));
-        req.add_property(p, self.prop(p, "CRTC_Y")?, S(dst.y as i64));
-        req.add_property(p, self.prop(p, "CRTC_W")?, U(dst.w as u64));
-        req.add_property(p, self.prop(p, "CRTC_H")?, U(dst.h as u64));
-        if let Some(ov) = self.overlay.as_ref().filter(|o| o.usable != Some(false)) {
-            let o = ov.plane;
-            match ov.dst {
-                Some(r) => {
-                    let fb = ov.buffers[ov.front].fb;
-                    let (w, h) = ov.size;
-                    req.add_property(
-                        o,
-                        self.prop(o, "FB_ID")?,
-                        property::Value::Framebuffer(Some(fb)),
-                    );
-                    req.add_property(
-                        o,
-                        self.prop(o, "CRTC_ID")?,
-                        property::Value::CRTC(Some(self.crtc)),
-                    );
-                    req.add_property(o, self.prop(o, "SRC_X")?, U(0));
-                    req.add_property(o, self.prop(o, "SRC_Y")?, U(0));
-                    req.add_property(o, self.prop(o, "SRC_W")?, U((w as u64) << 16));
-                    req.add_property(o, self.prop(o, "SRC_H")?, U((h as u64) << 16));
-                    req.add_property(o, self.prop(o, "CRTC_X")?, S(r.x as i64));
-                    req.add_property(o, self.prop(o, "CRTC_Y")?, S(r.y as i64));
-                    req.add_property(o, self.prop(o, "CRTC_W")?, U(r.w as u64));
-                    req.add_property(o, self.prop(o, "CRTC_H")?, U(r.h as u64));
+        let mut set = |p: plane::Handle,
+                       fb: framebuffer::Handle,
+                       src: (usize, usize),
+                       dst: Rect|
+         -> io::Result<()> {
+            req.add_property(
+                p,
+                self.prop(p, "FB_ID")?,
+                property::Value::Framebuffer(Some(fb)),
+            );
+            req.add_property(
+                p,
+                self.prop(p, "CRTC_ID")?,
+                property::Value::CRTC(Some(self.crtc)),
+            );
+            req.add_property(p, self.prop(p, "SRC_X")?, U(0));
+            req.add_property(p, self.prop(p, "SRC_Y")?, U(0));
+            req.add_property(p, self.prop(p, "SRC_W")?, U((src.0 as u64) << 16));
+            req.add_property(p, self.prop(p, "SRC_H")?, U((src.1 as u64) << 16));
+            req.add_property(p, self.prop(p, "CRTC_X")?, S(dst.x as i64));
+            req.add_property(p, self.prop(p, "CRTC_Y")?, S(dst.y as i64));
+            req.add_property(p, self.prop(p, "CRTC_W")?, U(dst.w as u64));
+            req.add_property(p, self.prop(p, "CRTC_H")?, U(dst.h as u64));
+            Ok(())
+        };
+        set(self.plane, self.buffers[buf].fb, src, dst)?;
+        if let Some(o) = self.overlay {
+            match self.chrome.buffers.get(self.chrome.front) {
+                Some(b) if self.path != Some(Path::Composite) => {
+                    let (w, h) = self.mode_size();
+                    let full = Rect { x: 0, y: 0, w, h };
+                    set(o, b.fb, self.chrome.layout.size(), full)?;
                 }
-                None => {
+                _ => {
                     req.add_property(
                         o,
                         self.prop(o, "FB_ID")?,
@@ -419,162 +445,149 @@ impl Display {
         Ok(())
     }
 
-    /// Shows `img` fullscreen (aspect ratio kept), with an optional `label`
-    /// in the bottom-right corner of the screen. Blocks until the flip is done.
-    pub fn present(&mut self, img: &Image, label: Option<&Image>) -> io::Result<()> {
+    /// Tries the overlay path with `img`; on success it stays set up.
+    fn try_overlay(&mut self, img: &Image) -> io::Result<bool> {
+        if self.overlay.is_none() {
+            return Ok(false);
+        }
         let src = (img.width, img.height);
-        let mode = self.mode_size();
+        self.ensure_buffers(src, false)?;
+        self.chrome.buffers = self.make_buffers(self.chrome.layout.size(), DrmFourcc::Argb8888)?;
+        let dst = letterbox(src, self.viewport());
+        match self.commit(0, src, dst, AtomicCommitFlags::TEST_ONLY) {
+            Ok(()) => Ok(true),
+            // EINVAL/ERANGE: the driver refuses this plane configuration.
+            Err(e) if matches!(e.raw_os_error(), Some(22 | 34)) => {
+                let b = std::mem::take(&mut self.chrome.buffers);
+                self.free_buffers(b);
+                Ok(false)
+            }
+            Err(e) => Err(e),
+        }
+    }
 
-        if self.hw_scaling.is_none() {
-            self.ensure_buffers(src, false)?;
-            let ok = match self.commit(src, letterbox(src, mode), AtomicCommitFlags::TEST_ONLY) {
-                Ok(()) => true,
-                // EINVAL/ERANGE: the driver refuses this plane configuration.
-                Err(e) if matches!(e.raw_os_error(), Some(22 | 34)) => false,
-                Err(e) => return Err(e),
+    /// Updates the frame image to `state` and records what changed. False if
+    /// nothing did.
+    fn update_chrome(&mut self, state: &lcars::State) -> bool {
+        let c = &mut self.chrome;
+        let rects = match &c.state {
+            Some(old) => c.layout.changed(old, state),
+            None => vec![c.layout.full()],
+        };
+        for &r in &rects {
+            lcars::render(&mut c.img, &c.layout, state, r);
+        }
+        for p in &mut c.pending {
+            p.extend_from_slice(&rects);
+        }
+        c.state = Some(state.clone());
+        !rects.is_empty()
+    }
+
+    /// Shows `img` (None: the last one) inside the LCARS frame described by
+    /// `state`. Returns without a commit if nothing changed. Blocks until
+    /// the flip is done.
+    pub fn present(&mut self, img: Option<&Image>, state: &lcars::State) -> io::Result<()> {
+        let mode = self.mode_size();
+        if self.path.is_none() {
+            let Some(img) = img else {
+                return Ok(());
             };
+            let ok = self.try_overlay(img)?;
             info!(
-                "hardware plane scaling: {}",
+                "LCARS frame on the overlay plane, picture scaled by the hardware: {}",
                 if ok { "yes" } else { "no, using CPU" }
             );
-            self.hw_scaling = Some(ok);
+            self.path = Some(if ok { Path::Overlay } else { Path::Composite });
         }
-
-        let (fb_size, dst) = if self.hw_scaling == Some(true) {
-            self.ensure_buffers(src, false)?;
-            let r = Rect {
-                x: 0,
-                y: 0,
-                w: src.0 as u32,
-                h: src.1 as u32,
-            };
-            self.blit(img, r)?;
-            (src, letterbox(src, mode))
-        } else {
-            self.ensure_buffers(mode, true)?;
-            self.blit(img, letterbox(src, mode))?;
-            let full = Rect {
-                x: 0,
-                y: 0,
-                w: mode.0 as u32,
-                h: mode.1 as u32,
-            };
-            (mode, full)
+        let changed = self.update_chrome(state);
+        if img.is_none() && !changed {
+            return Ok(());
+        }
+        let Some((img_size, buf)) = img
+            .map(|i| ((i.width, i.height), self.back))
+            .or(self.shown.map(|(b, s)| (s, b)))
+        else {
+            return Ok(());
         };
 
-        // The label goes on the overlay plane (hardware scaling only: with CPU
-        // scaling the buffer has screen pixels anyway), else into the buffer.
-        let on_plane = match label {
-            Some(l) if self.hw_scaling == Some(true) => self.set_overlay(l, mode, fb_size, dst)?,
-            _ => false,
-        };
-        if let Some(ov) = self.overlay.as_mut().filter(|_| !on_plane) {
-            ov.dst = None;
-        }
-        if let (Some(l), false) = (label, on_plane) {
-            if let Some(r) = label_rect((l.width, l.height), fb_size) {
-                use drm::buffer::Buffer as _;
-                let back = &mut self.buffers[self.back];
-                let pitch = back.db.pitch() as usize;
-                let mut map = self.card.map_dumb_buffer(&mut back.db)?;
-                blend(map.as_mut(), pitch, l, r);
+        let vp = self.viewport();
+        let (fb_size, dst) = match self.path {
+            Some(Path::Overlay) => {
+                if let Some(img) = img {
+                    self.ensure_buffers(img_size, false)?;
+                    let r = Rect {
+                        x: 0,
+                        y: 0,
+                        w: img.width,
+                        h: img.height,
+                    };
+                    self.blit(img, r, r)?;
+                }
+                let c = &mut self.chrome;
+                let next = c.front ^ 1;
+                if !c.pending[next].is_empty() {
+                    let db = &mut c.buffers[next].db;
+                    let pitch = db.pitch() as usize;
+                    let mut map = self.card.map_dumb_buffer(db)?;
+                    for r in c.pending[next].drain(..) {
+                        copy_scaled(map.as_mut(), pitch, &c.img, r, 1, Rect::default());
+                    }
+                    c.front = next;
+                }
+                (img_size, letterbox(img_size, vp))
             }
-        }
+            _ => {
+                self.ensure_buffers(mode, true)?;
+                if let Some(img) = img {
+                    self.last = Some(img.clone());
+                }
+                let last = self.last.take().unwrap();
+                self.blit(&last, letterbox(img_size, vp), vp)?;
+                self.last = Some(last);
+                let c = &mut self.chrome;
+                let db = &mut self.buffers[self.back].db;
+                let pitch = db.pitch() as usize;
+                let mut map = self.card.map_dumb_buffer(db)?;
+                for r in c.pending[self.back].drain(..) {
+                    copy_scaled(map.as_mut(), pitch, &c.img, r, c.scale, vp);
+                }
+                let full = Rect {
+                    x: 0,
+                    y: 0,
+                    w: mode.0,
+                    h: mode.1,
+                };
+                (mode, full)
+            }
+        };
+        let buf = if self.path == Some(Path::Composite) {
+            self.back
+        } else {
+            buf
+        };
 
-        self.commit(fb_size, dst, AtomicCommitFlags::empty())?;
+        self.commit(buf, fb_size, dst, AtomicCommitFlags::empty())?;
         self.modeset_done = true;
-        self.back ^= 1;
+        self.shown = Some((buf, img_size));
+        if buf == self.back {
+            self.back ^= 1;
+        }
         Ok(())
     }
 
-    /// Puts `label` on the overlay plane for the next commit. False if there
-    /// is no usable overlay plane.
-    fn set_overlay(
-        &mut self,
-        label: &Image,
-        mode: (usize, usize),
-        fb_size: (usize, usize),
-        dst: Rect,
-    ) -> io::Result<bool> {
-        let Some(ov) = self.overlay.as_mut().filter(|o| o.usable != Some(false)) else {
-            return Ok(false);
-        };
-        let size = (label.width, label.height);
-        let Some(r) = label_rect(size, mode) else {
-            ov.dst = None;
-            return Ok(false);
-        };
-        if ov.size != size || ov.buffers.is_empty() {
-            for b in ov.buffers.drain(..) {
-                let _ = self.card.destroy_framebuffer(b.fb);
-                let _ = self.card.destroy_dumb_buffer(b.db);
-            }
-            for _ in 0..2 {
-                let db = self.card.create_dumb_buffer(
-                    (size.0 as u32, size.1 as u32),
-                    DrmFourcc::Argb8888,
-                    32,
-                )?;
-                let fb = self.card.add_framebuffer(&db, 32, 32)?;
-                ov.buffers.push(Buffer { db, fb });
-            }
-            ov.size = size;
-            ov.label = None;
-        }
-        // New content goes into the buffer that is not on screen.
-        if ov.label.as_ref().is_none_or(|l| l.data != label.data) {
-            use drm::buffer::Buffer as _;
-            let next = ov.front ^ 1;
-            let db = &mut ov.buffers[next].db;
-            let pitch = db.pitch() as usize;
-            let mut map = self.card.map_dumb_buffer(db)?;
-            let out = map.as_mut();
-            for y in 0..size.1 {
-                out[y * pitch..y * pitch + size.0 * 4]
-                    .copy_from_slice(&label.data[y * size.0 * 4..(y + 1) * size.0 * 4]);
-            }
-            ov.front = next;
-            ov.label = Some(label.clone());
-        }
-        ov.dst = Some(r);
-
-        if ov.usable.is_none() {
-            let ok = match self.commit(fb_size, dst, AtomicCommitFlags::TEST_ONLY) {
-                Ok(()) => true,
-                Err(e) if matches!(e.raw_os_error(), Some(22 | 34)) => false,
-                Err(e) => return Err(e),
-            };
-            info!(
-                "overlay plane for the status label: {}",
-                if ok {
-                    "yes"
-                } else {
-                    "no, drawing into the video"
-                }
-            );
-            let ov = self.overlay.as_mut().unwrap();
-            ov.usable = Some(ok);
-            if !ok {
-                ov.dst = None;
-                return Ok(false);
-            }
-        }
-        Ok(true)
-    }
-
-    /// Copies `img` into the back buffer at `dst`, nearest-neighbour scaled if needed.
-    fn blit(&mut self, img: &Image, dst: Rect) -> io::Result<()> {
-        use drm::buffer::Buffer as _;
+    /// Copies `img` into the back buffer at `dst`, nearest-neighbour scaled
+    /// if needed, and clears the rest of `area` (which contains `dst`).
+    fn blit(&mut self, img: &Image, dst: Rect, area: Rect) -> io::Result<()> {
         let back = &mut self.buffers[self.back];
         let pitch = back.db.pitch() as usize;
-        let (bw, bh) = self.buf_size;
         let mut map = self.card.map_dumb_buffer(&mut back.db)?;
         let out = map.as_mut();
         let row_bytes = img.width * 4;
 
-        if dst.w as usize == img.width && dst.h as usize == img.height {
+        if dst.w == img.width && dst.h == img.height {
             for y in 0..img.height {
-                let o = (dst.y as usize + y) * pitch + dst.x as usize * 4;
+                let o = (dst.y + y) * pitch + dst.x * 4;
                 out[o..o + row_bytes]
                     .copy_from_slice(&img.data[y * row_bytes..(y + 1) * row_bytes]);
             }
@@ -582,23 +595,18 @@ impl Display {
         }
 
         // Clear the letterbox bars on every frame: both buffers alternate, and it is cheap.
-        let (dx, dy, dw, dh) = (
-            dst.x as usize,
-            dst.y as usize,
-            dst.w as usize,
-            dst.h as usize,
-        );
-        let xs: Vec<usize> = (0..dw).map(|x| x * img.width / dw * 4).collect();
-        for y in 0..bh {
-            let row = &mut out[y * pitch..y * pitch + bw * 4];
-            if y < dy || y >= dy + dh {
+        let xs: Vec<usize> = (0..dst.w).map(|x| x * img.width / dst.w * 4).collect();
+        for y in area.y..area.bottom() {
+            let row = &mut out[y * pitch + area.x * 4..y * pitch + area.right() * 4];
+            if y < dst.y || y >= dst.bottom() {
                 row.fill(0);
                 continue;
             }
-            row[..dx * 4].fill(0);
-            row[(dx + dw) * 4..].fill(0);
-            let src_row = &img.data[(y - dy) * img.height / dh * row_bytes..][..row_bytes];
-            for (px, &sx) in row[dx * 4..(dx + dw) * 4].chunks_exact_mut(4).zip(&xs) {
+            let (l, r) = (dst.x - area.x, dst.right() - area.x);
+            row[..l * 4].fill(0);
+            row[r * 4..].fill(0);
+            let src_row = &img.data[(y - dst.y) * img.height / dst.h * row_bytes..][..row_bytes];
+            for (px, &sx) in row[l * 4..r * 4].chunks_exact_mut(4).zip(&xs) {
                 px.copy_from_slice(&src_row[sx..sx + 4]);
             }
         }
@@ -608,18 +616,10 @@ impl Display {
 
 impl Drop for Display {
     fn drop(&mut self) {
-        if let Some(ov) = self.overlay.as_mut() {
-            for b in ov.buffers.drain(..) {
-                let _ = self.card.destroy_framebuffer(b.fb);
-                let _ = self.card.destroy_dumb_buffer(b.db);
-            }
-        }
-        for b in self.buffers.drain(..) {
-            let _ = self.card.destroy_framebuffer(b.fb);
-            if let Err(e) = self.card.destroy_dumb_buffer(b.db) {
-                warn!("destroy dumb buffer: {e}");
-            }
-        }
+        let b = std::mem::take(&mut self.chrome.buffers);
+        self.free_buffers(b);
+        let b = std::mem::take(&mut self.buffers);
+        self.free_buffers(b);
     }
 }
 
@@ -627,68 +627,43 @@ impl Drop for Display {
 mod tests {
     use super::*;
 
+    fn rect(x: usize, y: usize, w: usize, h: usize) -> Rect {
+        Rect { x, y, w, h }
+    }
+
     #[test]
     fn letterbox_fits() {
+        let screen = |w, h| rect(0, 0, w, h);
         assert_eq!(
-            letterbox((640, 360), (1920, 1080)),
-            Rect {
-                x: 0,
-                y: 0,
-                w: 1920,
-                h: 1080
-            }
+            letterbox((640, 360), screen(1920, 1080)),
+            screen(1920, 1080)
         );
         assert_eq!(
-            letterbox((640, 360), (1280, 1024)),
-            Rect {
-                x: 0,
-                y: 152,
-                w: 1280,
-                h: 720
-            }
+            letterbox((640, 360), screen(1280, 1024)),
+            rect(0, 152, 1280, 720)
         );
         assert_eq!(
-            letterbox((640, 360), (2560, 1080)),
-            Rect {
-                x: 320,
-                y: 0,
-                w: 1920,
-                h: 1080
-            }
+            letterbox((640, 360), screen(2560, 1080)),
+            rect(320, 0, 1920, 1080)
+        );
+        assert_eq!(
+            letterbox((640, 360), rect(100, 50, 640, 400)),
+            rect(100, 70, 640, 360)
         );
     }
 
     #[test]
-    fn label_fits_below_the_image() {
-        // 16:9 screen: no bar, smallest label
-        assert_eq!(label_scale((640, 360), (1920, 1080)), 1);
-        // 16:10: bar of 60 px, 16 px font
-        assert_eq!(label_scale((640, 360), (1920, 1200)), 2);
-        // 5:4: large bar, but at most 16 px on a 1024 px high screen
-        assert_eq!(label_scale((640, 360), (1280, 1024)), 1);
-        assert_eq!(label_scale((640, 360), (1920, 1440)), 2);
-        let r = label_rect((200, 20), (1920, 1200)).unwrap();
-        assert_eq!((r.x, r.y), (1920 - 204, 1200 - 24));
-        assert_eq!(label_rect((200, 20), (100, 100)), None);
-    }
-
-    #[test]
-    fn blend_mixes_by_alpha() {
-        let label = Image {
+    fn copy_scaled_doubles_and_skips_the_hole() {
+        let img = Image {
             width: 2,
             height: 1,
-            data: vec![0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0x80],
+            data: vec![1, 1, 1, 1, 2, 2, 2, 2],
         };
-        let mut out = vec![100u8; 3 * 4 * 2];
-        let r = Rect {
-            x: 1,
-            y: 1,
-            w: 2,
-            h: 1,
-        };
-        blend(&mut out, 12, &label, r);
-        assert_eq!(&out[12..16], &[100; 4], "outside untouched");
-        assert_eq!(&out[16..19], &[0xff; 3], "opaque");
-        assert_eq!(&out[20..23], &[49; 3], "half dark");
+        let pitch = 4 * 4;
+        let mut out = vec![0u8; pitch * 2];
+        copy_scaled(&mut out, pitch, &img, rect(0, 0, 2, 1), 2, rect(3, 1, 1, 1));
+        let px = |x: usize, y: usize| out[y * pitch + x * 4];
+        assert_eq!([px(0, 0), px(1, 0), px(2, 0), px(3, 0)], [1, 1, 2, 2]);
+        assert_eq!([px(0, 1), px(1, 1), px(2, 1), px(3, 1)], [1, 1, 2, 0]);
     }
 }

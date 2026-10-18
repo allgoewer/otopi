@@ -2,6 +2,7 @@ mod config;
 mod decode;
 mod display;
 mod jpeg;
+mod lcars;
 mod proto;
 mod rotate;
 mod session;

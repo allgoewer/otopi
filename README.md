@@ -10,14 +10,13 @@ switch on the otoscope, and the live picture shows up on the screen.
 
 - Boots in about 6 seconds.
 - Finds the otoscope's WiFi (`hndec-…` or `HNDEC_…`) and connects to it by itself.
-- Shows the live video fullscreen.
+- Shows the live video in an LCARS-style frame.
 - Reconnects by itself when the otoscope is switched off and on again or loses the
   connection.
 - Keeps the picture level with the otoscope's tilt sensor, so "up" stays up while you
   turn the otoscope.
-- Shows CPU load, temperature and the otopi version in a small corner label.
-- Moves the "Searching" text slowly around the screen while it waits, so the screen
-  does not burn in.
+- Shows the connection status, CPU load, temperature and the otopi version in the
+  frame's bottom bar.
 - Runs from memory only and never writes to the SD card. You can pull the power at any
   time.
 
@@ -81,8 +80,8 @@ cable.
 Set `rotate = off` in `otopi.conf` (see [Settings](#settings)).
 
 **The picture freezes.**
-When the video stops, otopi keeps the last picture for up to 10 seconds, with a red
-label in the top-left corner, and reconnects by itself. If it does not come back,
+When the video stops, otopi keeps the last picture for up to 10 seconds, with the
+status in the bottom bar turning red, and reconnects by itself. If it does not come back,
 switch the otoscope off and on again.
 
 ## Advanced

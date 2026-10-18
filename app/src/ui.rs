@@ -8,6 +8,7 @@ use log::{error, info, warn};
 
 use crate::decode;
 use crate::display::{Display, Image};
+use crate::lcars;
 use crate::rotate::{self, Leveler};
 use crate::session::Frame;
 use crate::status;
@@ -16,9 +17,10 @@ use crate::sysinfo::SysInfo;
 /// After this long without video, the last frame is replaced by the status screen.
 const LAST_FRAME_KEEP: Duration = Duration::from_secs(10);
 const DISPLAY_RETRY: Duration = Duration::from_secs(2);
+/// Status screen size without a display.
 const STATUS_SIZE: (usize, usize) = (640, 360);
-/// Frame interval of the moving "Searching" screen.
-const ANIMATION_FRAME: Duration = Duration::from_millis(40);
+/// Step of the sidebar scanning animation while searching.
+const ANIMATION_STEP: Duration = Duration::from_millis(400);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Status {
@@ -38,6 +40,16 @@ impl Status {
             Status::Connecting(ssid) => ("Connecting...".into(), ssid.clone()),
             Status::WaitingForVideo => ("Waiting for video...".into(), String::new()),
             Status::Streaming => ("Connected".into(), String::new()),
+        }
+    }
+
+    /// Text of the status pill in the LCARS frame.
+    fn pill(&self) -> &'static str {
+        match self {
+            Status::Searching => "SEARCHING",
+            Status::Connecting(_) => "CONNECTING",
+            Status::WaitingForVideo => "STANDBY",
+            Status::Streaming => "STREAMING",
         }
     }
 }
@@ -98,26 +110,25 @@ impl Ui {
     fn run(&self, use_display: bool, rotate: rotate::Mode) {
         let mut display: Option<Display> = None;
         let mut last_open_try: Option<Instant> = None;
-        let mut img = Image::new(STATUS_SIZE.0, STATUS_SIZE.1);
+        let mut img = Image::default();
         let mut decoded = Image::default();
         let mut leveler = Leveler::new(rotate);
         // The last frame as shown (rotated), with the time it arrived.
         let mut last_frame: Option<(Image, Instant)> = None;
-        let mut shown: Option<(Status, bool)> = None; // what the status path last drew
+        // The status the status screen was last drawn for.
+        let mut shown: Option<Status> = None;
         let mut stats = Stats::new();
-        let mut bouncer = status::Bouncer::new();
         let mut sysinfo = SysInfo::new();
-        // The corner label over the video: (text, scale, image).
-        let mut label: Option<(String, usize, Image)> = None;
-        // Time of the last animation frame while the "Searching" screen moves.
-        let mut animating: Option<Instant> = None;
+        // Sidebar animation while searching: step and time of the last one.
+        let mut phase = 0;
+        let mut last_step = Instant::now();
 
         loop {
             let (status, frame) = {
                 let mut s = self.state.lock().unwrap();
                 if !s.dirty {
-                    let timeout = if animating.is_some() {
-                        ANIMATION_FRAME
+                    let timeout = if s.status == Status::Searching {
+                        ANIMATION_STEP
                     } else {
                         Duration::from_secs(1)
                     };
@@ -127,6 +138,8 @@ impl Ui {
                 (s.status.clone(), s.frame.take())
             };
 
+            // The picture the display has to show again after a (re)open.
+            let mut reshow = false;
             if use_display
                 && display.is_none()
                 && last_open_try.is_none_or(|t| t.elapsed() >= DISPLAY_RETRY)
@@ -136,15 +149,12 @@ impl Ui {
                     Ok(d) => {
                         display = Some(d);
                         shown = None;
+                        reshow = true;
                     }
                     Err(e) => warn!("display: {e}"),
                 }
             }
 
-            // Set again below only while the "Searching" screen moves.
-            let last_anim = animating.take();
-            // Video gets the label in the corner, status screens do not.
-            let mut with_label = false;
             let to_show = if let Some(frame) = frame {
                 let t = Instant::now();
                 match decode::decode_bgra(&frame.jpeg, &mut decoded.data) {
@@ -157,8 +167,8 @@ impl Ui {
                         let mut frame_img = last_frame.take().map(|(i, _)| i).unwrap_or_default();
                         if degrees.abs() >= rotate::MIN_DEGREES {
                             let src = (w, h);
-                            let screen = display.as_ref().map_or(src, |d| d.mode_size());
-                            let size = rotate::canvas_size(src, screen);
+                            let area = display.as_ref().map_or(src, |d| d.viewport_size());
+                            let size = rotate::canvas_size(src, area);
                             // Switching between rotated (canvas) and level
                             // (decoded) frames must not reallocate the buffers.
                             if let Some(d) = display.as_mut() {
@@ -170,17 +180,6 @@ impl Ui {
                         }
                         stats.frame(decode_time, t.elapsed(), degrees);
                         last_frame = Some((frame_img, Instant::now()));
-                        with_label = true;
-                        if let Some(d) = display.as_ref() {
-                            let scale = crate::display::label_scale((w, h), d.mode_size());
-                            let text = sysinfo.text();
-                            if label
-                                .as_ref()
-                                .is_none_or(|(t, s, _)| t != text || *s != scale)
-                            {
-                                label = Some((text.into(), scale, status::label(text, scale)));
-                            }
-                        }
                         shown = None;
                         last_frame.as_ref().map(|(i, _)| i)
                     }
@@ -189,47 +188,48 @@ impl Ui {
                         None
                     }
                 }
-            } else if status == Status::Streaming {
-                None // keep the last frame on screen
             } else {
-                let recent = last_frame
-                    .as_ref()
-                    .is_some_and(|(_, t)| t.elapsed() < LAST_FRAME_KEEP);
-                if status == Status::Searching && !recent {
-                    let now = Instant::now();
-                    let dt = last_anim.map_or(0.0, |t| (now - t).as_secs_f32());
-                    animating = Some(now);
-                    if (img.width, img.height) != STATUS_SIZE {
-                        img = Image::new(STATUS_SIZE.0, STATUS_SIZE.1);
-                    }
-                    let (title, detail) = status.text();
-                    bouncer.screen(&mut img, &title, &detail, dt);
-                    shown = None;
-                    Some(&img)
-                } else if shown.as_ref() == Some(&(status.clone(), recent)) {
-                    None
-                } else {
-                    let (title, detail) = status.text();
-                    match last_frame.as_ref().filter(|_| recent) {
-                        Some((f, _)) => {
-                            img.clone_from(f);
-                            status::badge(&mut img, &title);
-                        }
-                        None => {
-                            if (img.width, img.height) != STATUS_SIZE {
-                                img = Image::new(STATUS_SIZE.0, STATUS_SIZE.1);
-                            }
-                            status::screen(&mut img, &title, &detail);
-                        }
-                    }
-                    shown = Some((status, recent));
-                    Some(&img)
-                }
+                None
             };
 
-            if let (Some(d), Some(image)) = (display.as_mut(), to_show) {
-                let l = label.as_ref().filter(|_| with_label).map(|(_, _, i)| i);
-                if let Err(e) = d.present(image, l) {
+            // Without video, the last frame stays for a while (the frame
+            // shows the status in red), then the status screen follows.
+            let recent = last_frame
+                .as_ref()
+                .is_some_and(|(_, t)| t.elapsed() < LAST_FRAME_KEEP);
+            let stale = recent && status != Status::Streaming;
+            let to_show = match to_show {
+                Some(i) => Some(i),
+                None if recent || status == Status::Streaming => {
+                    last_frame.as_ref().map(|(i, _)| i).filter(|_| reshow)
+                }
+                None if shown.as_ref() != Some(&status) => {
+                    let size = display.as_ref().map_or(STATUS_SIZE, |d| d.viewport_size());
+                    if (img.width, img.height) != size {
+                        img = Image::new(size.0, size.1);
+                    }
+                    let (title, detail) = status.text();
+                    status::screen(&mut img, &title, &detail);
+                    shown = Some(status.clone());
+                    Some(&img)
+                }
+                None => None,
+            };
+
+            let animating = status == Status::Searching && !recent;
+            if animating && last_step.elapsed() >= ANIMATION_STEP {
+                last_step = Instant::now();
+                phase += 1;
+            }
+
+            if let Some(d) = display.as_mut() {
+                let chrome = lcars::State {
+                    status: status.pill().into(),
+                    alert: stale,
+                    info: sysinfo.text().into(),
+                    phase: animating.then_some(phase),
+                };
+                if let Err(e) = d.present(to_show, &chrome) {
                     error!("display: {e}; reopening");
                     display = None;
                     shown = None;
