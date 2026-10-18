@@ -25,6 +25,8 @@ all: $(OUTPUT)/.config
 			$(BR_MAKE) rpi-firmware-reinstall || exit 1; break; \
 		fi; \
 	done
+	@# The app is a local package: Buildroot copies its source only once.
+	$(BR_MAKE) otopi-rebuild
 	$(BR_MAKE)
 
 buildroot: $(BR_DIR)/Makefile
