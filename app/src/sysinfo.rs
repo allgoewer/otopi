@@ -1,4 +1,4 @@
-//! CPU usage, SoC temperature and version for the corner of the video.
+//! Camera angle, CPU usage, SoC temperature and version for the corner of the video.
 
 use std::fs;
 use std::time::{Duration, Instant};
@@ -10,7 +10,8 @@ pub struct SysInfo {
     /// (total, idle) jiffies of the last /proc/stat sample.
     last_stat: Option<(u64, u64)>,
     last_update: Option<Instant>,
-    text: String,
+    cpu: Option<u32>,
+    millideg: Option<i64>,
 }
 
 /// (total, idle) from the aggregate "cpu" line of /proc/stat; idle includes iowait.
@@ -35,10 +36,12 @@ fn usage(prev: (u64, u64), now: (u64, u64)) -> Option<u32> {
 }
 
 /// Formats the corner text; missing values are shown as "--".
-fn format(cpu: Option<u32>, millideg: Option<i64>, version: &str) -> String {
+fn format(degrees: Option<f32>, cpu: Option<u32>, millideg: Option<i64>, version: &str) -> String {
+    // via i32, so that -0.4 shows as "0" and not "-0"
+    let angle = degrees.map_or("--".into(), |d| (d.round() as i32).to_string());
     let cpu = cpu.map_or("--".into(), |c| c.to_string());
     let temp = millideg.map_or("--".into(), |t| (t / 1000).to_string());
-    format!("CPU {cpu:>3}%  {temp}\u{b0}C  {version}")
+    format!("{angle:>4}\u{b0}  CPU {cpu:>3}%  {temp}\u{b0}C  {version}")
 }
 
 impl SysInfo {
@@ -46,27 +49,28 @@ impl SysInfo {
         SysInfo {
             last_stat: None,
             last_update: None,
-            text: String::new(),
+            cpu: None,
+            millideg: None,
         }
     }
 
-    /// The current text, re-read at most once per second.
-    pub fn text(&mut self) -> &str {
+    /// The current text with the camera angle; CPU and temperature are
+    /// re-read at most once per second.
+    pub fn text(&mut self, degrees: Option<f32>) -> String {
         if self.last_update.is_none_or(|t| t.elapsed() >= UPDATE) {
             self.last_update = Some(Instant::now());
             let stat = fs::read_to_string("/proc/stat")
                 .ok()
                 .and_then(|s| parse_stat(&s));
-            let cpu = self.last_stat.zip(stat).and_then(|(p, n)| usage(p, n));
+            self.cpu = self.last_stat.zip(stat).and_then(|(p, n)| usage(p, n));
             if stat.is_some() {
                 self.last_stat = stat;
             }
-            let temp = fs::read_to_string(THERMAL)
+            self.millideg = fs::read_to_string(THERMAL)
                 .ok()
                 .and_then(|s| s.trim().parse().ok());
-            self.text = format(cpu, temp, crate::VERSION);
         }
-        &self.text
+        format(degrees, self.cpu, self.millideg, crate::VERSION)
     }
 }
 
@@ -87,13 +91,14 @@ mod tests {
     #[test]
     fn text_format() {
         assert_eq!(
-            format(Some(7), Some(48_312), "v0.1.0"),
-            "CPU   7%  48\u{b0}C  v0.1.0"
+            format(Some(-12.4), Some(7), Some(48_312), "v0.1.0"),
+            " -12\u{b0}  CPU   7%  48\u{b0}C  v0.1.0"
         );
         assert_eq!(
-            format(None, None, "abc1234"),
-            "CPU  --%  --\u{b0}C  abc1234"
+            format(None, None, None, "abc1234"),
+            "  --\u{b0}  CPU  --%  --\u{b0}C  abc1234"
         );
-        assert!(SysInfo::new().text().ends_with(crate::VERSION));
+        assert_eq!(&format(Some(-0.4), None, None, "v")[..6], "   0\u{b0}");
+        assert!(SysInfo::new().text(None).ends_with(crate::VERSION));
     }
 }

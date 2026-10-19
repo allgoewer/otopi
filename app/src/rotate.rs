@@ -64,14 +64,18 @@ impl Leveler {
     /// Returns the rotation for the current frame. Without a tilt sample the
     /// last rotation stays.
     pub fn update(&mut self, tilt: Option<(i32, i32)>) -> f32 {
+        let d = self.track(tilt);
         match self.mode {
             Mode::Off => 0.0,
-            Mode::Free => self.track(tilt),
-            Mode::Snap => {
-                let d = self.track(tilt);
-                self.snap(d)
-            }
+            Mode::Free => d,
+            Mode::Snap => self.snap(d),
         }
+    }
+
+    /// The smoothed camera angle (the rotation that would level the image),
+    /// unsnapped and also tracked with rotation off.
+    pub fn camera_degrees(&self) -> f32 {
+        self.degrees
     }
 
     fn snap(&mut self, d: f32) -> f32 {

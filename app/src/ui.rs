@@ -226,7 +226,7 @@ impl Ui {
                 let chrome = lcars::State {
                     status: status.pill().into(),
                     alert: stale,
-                    info: sysinfo.text().into(),
+                    info: sysinfo.text(recent.then(|| leveler.camera_degrees())),
                     phase: animating.then_some(phase),
                 };
                 if let Err(e) = d.present(to_show, &chrome) {

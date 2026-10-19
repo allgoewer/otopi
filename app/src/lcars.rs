@@ -415,7 +415,7 @@ mod tests {
         State {
             status: "SEARCHING".into(),
             alert: false,
-            info: "CPU  12%  48\u{b0}C  v1.0.1-2-g9d306ce-dirty".into(),
+            info: "  -3\u{b0}  CPU  12%  48\u{b0}C  v1.0.1-2-g9d306ce-dirty".into(),
             phase: Some(1),
         }
     }
@@ -455,7 +455,7 @@ mod tests {
         let (a, mut b) = (state(), state());
         b.status = "STREAMING".into();
         b.alert = true;
-        b.info = "CPU 100%  80\u{b0}C  v1".into();
+        b.info = " 179\u{b0}  CPU 100%  80\u{b0}C  v1".into();
         b.phase = None;
         let mut img = Image::new(960, 540);
         render(&mut img, &l, &a, l.full());
