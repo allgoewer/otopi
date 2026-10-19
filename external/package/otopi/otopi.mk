@@ -15,6 +15,16 @@ OTOPI_OVERRIDE_SRCDIR_RSYNC_EXCLUSIONS = --exclude target --exclude VENDOR --exc
 OTOPI_GIT_VERSION := $(shell git -C $(BR2_EXTERNAL_OTOPI_PATH)/.. describe --tags --always --dirty 2>/dev/null)
 OTOPI_CARGO_ENV = OTOPI_GIT_VERSION=$(OTOPI_GIT_VERSION)
 
+# pkg-cargo overrides the release profile from Cargo.toml (opt-level from
+# BR2_OPTIMIZE_*, 16 codegen units, no LTO), which slows JPEG decoding. Our
+# variables come after its own, so these win. The target RUSTFLAGS repeat
+# pkg-cargo's ARM linker workaround and tune for the Pi Zero's core.
+OTOPI_CARGO_ENV += \
+	CARGO_PROFILE_RELEASE_OPT_LEVEL=3 \
+	CARGO_PROFILE_RELEASE_LTO=true \
+	CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1 \
+	CARGO_TARGET_$(call UPPERCASE,$(RUSTC_TARGET_NAME))_RUSTFLAGS="-Clink-arg=-Wl,--allow-multiple-definition -Ctarget-cpu=arm1176jzf-s"
+
 # Buildroot vendors crates in the download step, which the local site method
 # skips. Vendor them here instead. The first build needs network access; the
 # crates are cached in $(BR_CARGO_HOME). This runs before configure because
