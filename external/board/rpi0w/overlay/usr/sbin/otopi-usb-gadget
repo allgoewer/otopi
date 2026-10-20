@@ -1,0 +1,49 @@
+#!/bin/sh
+# USB Ethernet gadget on the OTG port, set up in configfs. Two configurations:
+#   1: RNDIS with Microsoft OS descriptors, so that Windows loads its builtin
+#      RNDIS driver without an .inf file. Windows uses only configuration 1.
+#   2: CDC ECM for macOS and Linux.
+# Each function has its own interface: usb0 (RNDIS) and usb1 (ECM).
+set -e
+
+mount -t configfs configfs /sys/kernel/config
+G=/sys/kernel/config/usb_gadget/otopi
+mkdir "$G"
+cd "$G"
+
+echo 0x1d6b >idVendor	# Linux Foundation
+echo 0x0104 >idProduct	# Multifunction Composite Gadget
+# Windows caches what it learnt about a device per vendor, product and
+# bcdDevice; a new bcdDevice makes it ask for the OS descriptors again.
+echo 0x0100 >bcdDevice
+echo 0x0200 >bcdUSB
+# Composite device with interface association descriptors
+echo 0xef >bDeviceClass
+echo 0x02 >bDeviceSubClass
+echo 0x01 >bDeviceProtocol
+mkdir strings/0x409
+echo otopi >strings/0x409/manufacturer
+echo "otopi USB Ethernet" >strings/0x409/product
+
+echo 1 >os_desc/use
+echo 0xcd >os_desc/b_vendor_code
+echo MSFT100 >os_desc/qw_sign
+
+mkdir functions/rndis.usb0
+echo 02:0f:0b:00:00:03 >functions/rndis.usb0/dev_addr
+echo 02:0f:0b:00:00:04 >functions/rndis.usb0/host_addr
+echo RNDIS >functions/rndis.usb0/os_desc/interface.rndis/compatible_id
+echo 5162001 >functions/rndis.usb0/os_desc/interface.rndis/sub_compatible_id
+
+mkdir functions/ecm.usb1
+echo 02:0f:0b:00:00:01 >functions/ecm.usb1/dev_addr
+echo 02:0f:0b:00:00:02 >functions/ecm.usb1/host_addr
+
+mkdir -p configs/c.1/strings/0x409 configs/c.2/strings/0x409
+echo RNDIS >configs/c.1/strings/0x409/configuration
+echo ECM >configs/c.2/strings/0x409/configuration
+ln -s functions/rndis.usb0 configs/c.1/
+ln -s functions/ecm.usb1 configs/c.2/
+ln -s configs/c.1 os_desc/
+
+ls /sys/class/udc >UDC

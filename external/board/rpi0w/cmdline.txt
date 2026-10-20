@@ -1,1 +1,1 @@
-console=ttyAMA0,115200 quiet loglevel=4 g_ether.idVendor=0x1d6b g_ether.idProduct=0x0104 g_ether.dev_addr=02:0f:0b:00:00:01 g_ether.host_addr=02:0f:0b:00:00:02
+console=ttyAMA0,115200 quiet loglevel=4

@@ -7,12 +7,15 @@
 ::sysinit:/sbin/ip link set lo up
 # Boot partition (settings, SSH keys) before otopi starts
 ::sysinit:/usr/sbin/otopi-mount-boot
+# USB Ethernet gadget (RNDIS for Windows, ECM for macOS and Linux)
+::sysinit:/usr/sbin/otopi-usb-gadget
 
 # The viewer. Restarted by init if it exits or panics.
 ::respawn:/usr/bin/otopi
 
 # Debug access: USB Ethernet gadget with DHCP (Pi is 10.55.0.1), SSH (key only)
-::respawn:/usr/sbin/otopi-usbnet
+::respawn:/usr/sbin/otopi-usbnet usb0
+::respawn:/usr/sbin/otopi-usbnet usb1
 ::respawn:/usr/sbin/otopi-sshd
 
 # Debug shell on the serial console (GPIO 14/15, 115200 baud)
