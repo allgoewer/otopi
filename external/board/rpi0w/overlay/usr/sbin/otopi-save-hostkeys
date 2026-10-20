@@ -1,9 +1,12 @@
 #!/bin/sh
-# Saves the dropbear host keys to /boot/ssh so that they survive a reboot.
+# Saves the dropbear host keys to ssh/ on the settings partition so that they
+# survive a reboot. Only while /settings is mounted, that is from
+# otopi-read-settings: afterwards the computer on the USB port may have the
+# partition mounted.
 set -e
-grep -q " /boot " /proc/mounts || { echo "/boot is not mounted" >&2; exit 1; }
-mount -o remount,rw /boot
-trap 'sync; mount -o remount,ro /boot' EXIT
-mkdir -p /boot/ssh
-cp /etc/dropbear/dropbear_*_host_key /boot/ssh/
-echo "host keys saved to /boot/ssh"
+grep -q " /settings " /proc/mounts || { echo "/settings is not mounted" >&2; exit 1; }
+mount -o remount,rw /settings
+trap 'sync; mount -o remount,ro /settings' EXIT
+mkdir -p /settings/ssh
+cp /etc/dropbear/dropbear_*_host_key /settings/ssh/
+echo "host keys saved to /settings/ssh"

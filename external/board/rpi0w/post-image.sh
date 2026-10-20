@@ -1,6 +1,6 @@
 #!/bin/sh
-# Builds sdcard.img: one FAT partition with firmware, DTB and the kernel
-# (which contains the initramfs).
+# Builds sdcard.img: a FAT boot partition with firmware, DTB and the kernel
+# (which contains the initramfs), and a FAT settings partition (OTOPI).
 set -e
 
 BOARD_DIR="$(dirname "$0")"
@@ -28,7 +28,6 @@ cp "${BINARIES_DIR}"/rpi-firmware/bootcode.bin \
 	"${BINARIES_DIR}"/rpi-firmware/cmdline.txt \
 	"${BINARIES_DIR}"/bcm2708-rpi-zero-w.dtb \
 	"${BINARIES_DIR}"/zImage \
-	"${BINARIES_DIR}"/otopi.conf \
 	"${BINARIES_DIR}/usbboot/"
 for o in vc4-kms-v3d disable-bt dwc2; do
 	cp "${BINARIES_DIR}/rpi-firmware/overlays/${o}.dtbo" "${BINARIES_DIR}/usbboot/overlays/"

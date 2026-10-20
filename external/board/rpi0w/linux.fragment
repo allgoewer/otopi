@@ -48,7 +48,8 @@ CONFIG_FW_LOADER=y
 # CONFIG_RFKILL is not set
 
 # USB: device mode only (OTG port), Ethernet gadget (RNDIS + ECM) for
-# debugging, set up in configfs by otopi-usb-gadget. The legacy g_ether has no
+# debugging and the boot partition as a drive, set up in configfs by
+# otopi-usb-gadget. The legacy g_ether has no
 # Microsoft OS descriptors, so Windows does not load its RNDIS driver for it.
 CONFIG_USB_SUPPORT=y
 # CONFIG_USB is not set
@@ -59,6 +60,7 @@ CONFIG_CONFIGFS_FS=y
 CONFIG_USB_CONFIGFS=y
 CONFIG_USB_CONFIGFS_RNDIS=y
 CONFIG_USB_CONFIGFS_ECM=y
+CONFIG_USB_CONFIGFS_MASS_STORAGE=y
 # CONFIG_USB_ETH is not set
 # CONFIG_USB_CONFIGFS_SERIAL is not set
 # CONFIG_USB_CONFIGFS_ACM is not set
@@ -66,7 +68,6 @@ CONFIG_USB_CONFIGFS_ECM=y
 # CONFIG_USB_CONFIGFS_NCM is not set
 # CONFIG_USB_CONFIGFS_ECM_SUBSET is not set
 # CONFIG_USB_CONFIGFS_EEM is not set
-# CONFIG_USB_CONFIGFS_MASS_STORAGE is not set
 # CONFIG_USB_CONFIGFS_F_LB_SS is not set
 # CONFIG_USB_CONFIGFS_F_FS is not set
 # CONFIG_USB_CONFIGFS_F_UAC1 is not set
@@ -75,7 +76,7 @@ CONFIG_USB_CONFIGFS_ECM=y
 # CONFIG_USB_CONFIGFS_F_HID is not set
 # CONFIG_USB_CONFIGFS_F_PRINTER is not set
 
-# Boot partition (FAT) on the SD card: persisted SSH host keys
+# Settings partition (FAT) on the SD card: settings and SSH keys
 CONFIG_MMC=y
 CONFIG_FAT_FS=y
 CONFIG_VFAT_FS=y

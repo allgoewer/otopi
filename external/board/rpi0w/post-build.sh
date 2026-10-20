@@ -28,8 +28,8 @@ rm -f "${TARGET_DIR}"/usr/lib/libstdc++.so* \
 rm -rf "${TARGET_DIR}/usr/share/man" "${TARGET_DIR}/usr/share/doc"
 rm -f "${TARGET_DIR}/etc/init.d/S"*
 
-# dropbear: /etc/dropbear is a symlink to /var/run/dropbear; otopi-sshd fills
-# a real directory instead.
+# dropbear: /etc/dropbear is a symlink to /var/run/dropbear; otopi-read-settings
+# fills a real directory instead.
 [ -L "${TARGET_DIR}/etc/dropbear" ] && rm -f "${TARGET_DIR}/etc/dropbear"
 mkdir -p "${TARGET_DIR}/etc/dropbear"
 chmod 700 "${TARGET_DIR}/etc/dropbear"

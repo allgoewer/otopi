@@ -1,9 +1,12 @@
 #!/bin/sh
-# USB Ethernet gadget on the OTG port, set up in configfs. Two configurations:
+# USB gadget on the OTG port, set up in configfs. Two configurations:
 #   1: RNDIS with Microsoft OS descriptors, so that Windows loads its builtin
 #      RNDIS driver without an .inf file. Windows uses only configuration 1.
 #   2: CDC ECM for macOS and Linux.
-# Each function has its own interface: usb0 (RNDIS) and usb1 (ECM).
+# Each Ethernet function has its own interface: usb0 (RNDIS) and usb1 (ECM).
+# Both configurations also have the SD card's settings partition (OTOPI) as a
+# USB drive; otopi-read-settings has unmounted it on the Pi. The boot
+# partition is not offered, so that the computer cannot damage it.
 set -e
 
 mount -t configfs configfs /sys/kernel/config
@@ -23,7 +26,7 @@ echo 0x02 >bDeviceSubClass
 echo 0x01 >bDeviceProtocol
 mkdir strings/0x409
 echo otopi >strings/0x409/manufacturer
-echo "otopi USB Ethernet" >strings/0x409/product
+echo otopi >strings/0x409/product
 
 echo 1 >os_desc/use
 echo 0xcd >os_desc/b_vendor_code
@@ -45,5 +48,14 @@ echo ECM >configs/c.2/strings/0x409/configuration
 ln -s functions/rndis.usb0 configs/c.1/
 ln -s functions/ecm.usb1 configs/c.2/
 ln -s configs/c.1 os_desc/
+
+SETTINGS_DEV=/dev/mmcblk0p2
+if [ -b "$SETTINGS_DEV" ] && ! grep -q "^$SETTINGS_DEV " /proc/mounts; then
+	mkdir functions/mass_storage.0
+	echo 1 >functions/mass_storage.0/lun.0/removable
+	echo "$SETTINGS_DEV" >functions/mass_storage.0/lun.0/file
+	ln -s functions/mass_storage.0 configs/c.1/
+	ln -s functions/mass_storage.0 configs/c.2/
+fi
 
 ls /sys/class/udc >UDC

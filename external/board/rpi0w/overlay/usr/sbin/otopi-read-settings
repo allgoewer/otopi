@@ -1,0 +1,44 @@
+#!/bin/sh
+# Copies what otopi needs from the SD card's settings partition (OTOPI) into
+# the RAM root filesystem: settings (/etc/otopi.conf), SSH host keys and
+# authorized_keys. On the first boot it creates the host keys and saves them
+# to the card. Then it unmounts the partition, so that otopi-usb-gadget can
+# offer it to the computer as a USB drive without both sides writing to it.
+# Changes made there apply after a restart. The boot partition is never
+# mounted. Runs from inittab before otopi starts. Without an SD card (rpiboot)
+# it gives up after 3 s; otopi then uses its defaults.
+
+SETTINGS_DEV=/dev/mmcblk0p2
+KEYDIR=/etc/dropbear
+
+mkdir -p /settings "$KEYDIR" /root/.ssh
+chmod 700 "$KEYDIR" /root/.ssh
+
+# The SD card can appear shortly after init starts.
+i=0
+while [ ! -b "$SETTINGS_DEV" ] && [ $i -lt 30 ]; do
+	sleep 0.1
+	i=$((i + 1))
+done
+if [ ! -b "$SETTINGS_DEV" ] || ! mount -t vfat -o ro "$SETTINGS_DEV" /settings; then
+	echo "otopi-read-settings: no settings partition, using defaults" >&2
+	exit 0
+fi
+
+[ -f /settings/otopi.conf ] && cp /settings/otopi.conf /etc/otopi.conf
+
+if ls /settings/ssh/dropbear_*_host_key >/dev/null 2>&1; then
+	cp /settings/ssh/dropbear_*_host_key "$KEYDIR/"
+else
+	dropbearkey -t ed25519 -f "$KEYDIR/dropbear_ed25519_host_key"
+	otopi-save-hostkeys
+fi
+chmod 600 "$KEYDIR"/*
+
+if [ -f /settings/ssh/authorized_keys ]; then
+	cp /settings/ssh/authorized_keys /root/.ssh/authorized_keys
+	chmod 600 /root/.ssh/authorized_keys
+fi
+
+umount /settings
+exit 0

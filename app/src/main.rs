@@ -30,7 +30,7 @@ usage: otopi [options]
   --iface NAME     WiFi interface (default wlan0)
   --ssid-prefix P  otoscope SSID prefix, any case (default hndec)
   --no-display     do not use DRM/KMS output
-  --config FILE    settings file (default /boot/otopi.conf)
+  --config FILE    settings file (default /etc/otopi.conf)
   --no-rotate      do not keep the image level (overrides the settings file)
   -V, --version    show the version
   -h, --help       show this text

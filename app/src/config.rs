@@ -1,4 +1,5 @@
-//! User settings from a small `key = value` file on the boot partition.
+//! User settings from a small `key = value` file. On the Pi it is copied
+//! from the SD card's settings partition at boot (otopi-read-settings).
 
 use std::io;
 use std::path::Path;
@@ -7,7 +8,7 @@ use log::{info, warn};
 
 use crate::rotate::Mode;
 
-pub const DEFAULT_PATH: &str = "/boot/otopi.conf";
+pub const DEFAULT_PATH: &str = "/etc/otopi.conf";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {

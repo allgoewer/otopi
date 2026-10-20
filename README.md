@@ -48,9 +48,11 @@ To check the download, compare it with `SHA256SUMS` from the same release:
 
 ## Settings
 
-The SD card has a file `otopi.conf`. Your computer can open the card (it is a normal
-FAT partition), so you can edit the file with any text editor. Changes take effect at
-the next boot.
+The SD card has a small partition named `OTOPI` with a file `otopi.conf`. Your
+computer can open it (it is a normal FAT partition), so you can edit the file with any
+text editor. You can also leave the card in the Pi and connect the Pi's `USB` port (not
+`PWR`) to the computer: `OTOPI` shows up as a USB drive. Eject the drive before you
+unplug the Pi or switch it off. Changes take effect at the next boot.
 
 | Setting | Values | Meaning |
 | --- | --- | --- |
@@ -92,8 +94,8 @@ Unpack it, connect the Pi's `USB` port (not `PWR`) to a computer, and run
 `sudo rpiboot -d <unpacked folder>`. The Pi loads otopi over the cable.
 
 **Log in over USB.** Connect the Pi's `USB` port to a computer: the Pi shows up as a USB
-network adapter. Put your SSH public key into `ssh/authorized_keys` on the SD card,
-then log in with `ssh root@10.55.0.1`.
+network adapter (on Windows: *Remote NDIS Compatible Device*) and a USB drive. Put
+your SSH public key into `ssh/authorized_keys` on the `OTOPI` drive, restart the Pi, then log in with `ssh root@10.55.0.1`.
 
 ## Building from source
 

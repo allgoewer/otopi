@@ -5,9 +5,10 @@
 ::sysinit:/bin/mount -t devpts devpts /dev/pts
 ::sysinit:/bin/hostname -F /etc/hostname
 ::sysinit:/sbin/ip link set lo up
-# Boot partition (settings, SSH keys) before otopi starts
-::sysinit:/usr/sbin/otopi-mount-boot
-# USB Ethernet gadget (RNDIS for Windows, ECM for macOS and Linux)
+# Settings and SSH keys from the settings partition before otopi starts
+::sysinit:/usr/sbin/otopi-read-settings
+# USB gadget: Ethernet (RNDIS for Windows, ECM for macOS and Linux) and the
+# settings partition as a drive
 ::sysinit:/usr/sbin/otopi-usb-gadget
 
 # The viewer. Restarted by init if it exits or panics.
