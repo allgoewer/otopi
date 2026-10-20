@@ -9,6 +9,7 @@ ROOTPATH_TMP="$(mktemp -d)"
 trap 'rm -rf "${ROOTPATH_TMP}"' EXIT
 
 cp "${BOARD_DIR}/otopi.conf" "${BINARIES_DIR}/otopi.conf"
+cp "${BOARD_DIR}/settings-README.md" "${BINARIES_DIR}/README.md"
 
 rm -rf "${GENIMAGE_TMP}"
 genimage \
